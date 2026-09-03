@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Activity Dock - Alert Overlay</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
+  #stage { position: fixed; inset: 0; pointer-events: none; }
+  .alert { position: absolute; min-width: 340px; max-width: 560px; padding: 18px 22px 18px 18px; border-radius: 16px; display: grid; grid-template-columns: auto 1fr; gap: 14px; align-items: center; color: #fff; --c: #4cc9f0;
+    animation: in .45s cubic-bezier(.2, .9, .3, 1.2) both; will-change: transform, opacity; }
+  .alert.out { animation: out .4s ease-in both; }
+  .alert .icon { width: 64px; height: 64px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 34px; background: var(--c30, rgba(76,201,240,.3)); box-shadow: 0 0 0 3px var(--c60, rgba(76,201,240,.6)), 0 0 28px var(--c45, rgba(76,201,240,.45)); overflow: hidden; flex: none; }
+  .alert .icon img { width: 100%; height: 100%; object-fit: cover; }
+  .alert .icon svg { width: 34px; height: 34px; color: var(--c); }
+  .alert .kind { font-size: 12px; font-weight: 800; letter-spacing: 2px; text-transform: uppercase; color: var(--c); }
+  .alert .head { font-size: 24px; font-weight: 800; line-height: 1.15; text-shadow: 0 2px 8px rgba(0, 0, 0, .5); }
+  .alert .head b { color: var(--c); }
+  .alert .msg { font-size: 16px; opacity: .92; margin-top: 6px; overflow-wrap: anywhere; line-height: 1.35; max-height: 4.2em; overflow: hidden; }
+  .alert .msg img.emote { height: 1.5em; vertical-align: middle; }
+  .alert .msg .cheermote { font-weight: 800; color: #ffb703; }
+  .alert .msg .cheermote img { height: 1.6em; vertical-align: middle; }
+  .alert .bar { position: absolute; left: 14px; right: 14px; bottom: 6px; height: 3px; border-radius: 3px; background: var(--c45, rgba(76,201,240,.45)); transform-origin: left; animation: bar linear both; }
+  .alert .pf { position: absolute; top: 10px; right: 12px; font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; opacity: .7; }
+  /* themes */
+  .theme-glass .alert { background: rgba(14, 16, 22, .82); backdrop-filter: blur(14px); border: 1px solid rgba(255, 255, 255, .08); box-shadow: 0 18px 50px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(255, 255, 255, .06); }
+  .theme-neon .alert { background: linear-gradient(135deg, rgba(10, 8, 20, .92), rgba(20, 8, 30, .92)); border: 2px solid var(--c); box-shadow: 0 0 20px var(--c), inset 0 0 30px var(--c22, rgba(76,201,240,.2)); }
+  .theme-neon .alert .head { text-shadow: 0 0 12px var(--c); }
+  .theme-light .alert { background: rgba(255, 255, 255, .95); color: #15171c; box-shadow: 0 14px 40px rgba(0, 0, 0, .35); }
+  .theme-light .alert .head { text-shadow: none; }
+  .theme-light .alert .icon { color: #111; }
+  .theme-minimal .alert { background: transparent; padding: 8px 12px; grid-template-columns: auto 1fr; }
+  .theme-minimal .alert .icon { width: 44px; height: 44px; font-size: 24px; box-shadow: none; background: transparent; }
+  .theme-minimal .alert .head { text-shadow: 0 2px 6px #000, 0 0 2px #000; font-size: 28px; }
+  .theme-minimal .alert .msg { text-shadow: 0 1px 4px #000; }
+  .theme-minimal .alert .bar, .theme-minimal .alert .pf { display: none; }
+  /* positions */
+  .pos-top-left .alert { top: 40px; left: 40px; } .pos-top-right .alert { top: 40px; right: 40px; } .pos-top-center .alert { top: 40px; left: 50%; --tx: -50%; }
+  .pos-bottom-left .alert { bottom: 40px; left: 40px; } .pos-bottom-right .alert { bottom: 40px; right: 40px; } .pos-bottom-center .alert { bottom: 40px; left: 50%; --tx: -50%; }
+  .pos-center .alert { top: 50%; left: 50%; --tx: -50%; --ty: -50%; }
+  @keyframes in { from { opacity: 0; transform: translate(var(--tx, 0), var(--ty, 0)) scale(.7) translateY(-20px); } to { opacity: 1; transform: translate(var(--tx, 0), var(--ty, 0)) scale(1); } }
+  @keyframes out { from { opacity: 1; transform: translate(var(--tx, 0), var(--ty, 0)) scale(1); } to { opacity: 0; transform: translate(var(--tx, 0), var(--ty, 0)) scale(.9) translateY(10px); } }
+  @keyframes bar { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+  #status { position: fixed; left: 8px; bottom: 8px; font: 12px/1.4 ui-monospace, Consolas, monospace; color: #9aa; background: rgba(0, 0, 0, .55); padding: 6px 10px; border-radius: 6px; max-width: 70vw; pointer-events: none; opacity: 1; transition: opacity 1s; }
+  #status.hide { opacity: 0; }
+  #status .ok { color: #3ddc84; } #status .bad { color: #ff5d5d; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="status">Activity Dock overlay - waiting for the dock…</div>
+<script src="js/util.js"></script>
+<script src="js/events.js"></script>
+<script src="js/sounds.js"></script>
+<script src="js/obs.js"></script>
+<script src="js/relay.js"></script>
+<script>
+(function (AD) {
+  'use strict';
+  // The overlay only needs a tiny settings shim for sounds.js
+  AD.settings = { get: () => ({ sounds: { enabled: true, volume: currentVolume, custom: {}, muted: {} } }) };
+  let currentVolume = 0.6;
+  const q = AD.parseHashParams();
+  const { h } = AD; const E = AD.events;
+  const stage = document.getElementById('stage'), status = document.getElementById('status');
+  const showStatus = q.debug === '1';
+  const queue = []; let showing = false; const seenIds = new Set();
+  let statusTimer = null;
+  function setStatus(html, keep) { status.innerHTML = html; status.classList.remove('hide'); clearTimeout(statusTimer); if (!keep && !showStatus) statusTimer = setTimeout(() => status.classList.add('hide'), 6000); }
+
+  const relay = new AD.Relay('overlay');
+  // Transport 1: the local server's SSE relay. Try same origin, then ?server=, then the default local address; keep retrying until found.
+  const candidates = [...new Set([/^https?:$/.test(location.protocol) ? location.origin : null, q.server ? q.server.replace(/\/$/, '') : null, 'http://127.0.0.1:8520', 'http://localhost:8520'].filter(Boolean))];
+  async function probe(base) { try { const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), 2500); const r = await fetch(base + '/api/health', { cache: 'no-store', signal: ctrl.signal }); clearTimeout(t); const d = await r.json(); return d?.ok && d.app === 'activity-dock'; } catch (_) { return false; } }
+  let serverFound = false;
+  async function findServer() {
+    for (const base of candidates) { if (await probe(base)) { serverFound = true; relay.useServer(base); setStatus('<span class="ok">●</span> connected to local server (' + base + ')'); return; } }
+    if (!q.obs) setStatus('<span class="bad">●</span> local server not found - retrying', true);
+    setTimeout(findServer, 15000);
+  }
+  findServer();
+  // Transport 2: OBS WebSocket (from URL params) 
+  if (q.obs) { relay.useObs(q.obs, q.pw || ''); }
+  relay.on('status', () => { const o = relay.obs; if (!o) return; setStatus((o.status === 'connected' ? '<span class="ok">●</span>' : '<span class="bad">●</span>') + ' OBS WebSocket: ' + o.status + (o.detail ? ' - ' + o.detail : ''), o.status !== 'connected'); });
+  relay.on('message', (m) => { if (m.kind === 'alert' && m.ev) enqueue(m.ev, m.cfg || {}); else if (m.kind === 'ping') relay.send({ kind: 'overlay-hello' }); });
+  relay.send({ kind: 'overlay-hello' });
+
+  function enqueue(ev, cfg) { if (ev.id && seenIds.has(ev.id)) return; if (ev.id) { seenIds.add(ev.id); if (seenIds.size > 500) seenIds.delete(seenIds.values().next().value); } queue.push({ ev, cfg }); if (queue.length > 30) queue.splice(0, queue.length - 30); pump(); }
+  function pump() { if (showing || !queue.length) return; const { ev, cfg } = queue.shift(); show(ev, cfg); }
+
+  const safeUrl = (u) => (typeof u === 'string' && /^https:\/\//.test(u) ? u : null);
+  function renderFragments(ev) {
+    const out = document.createDocumentFragment();
+    if (ev.fragments?.length) for (const f of ev.fragments) {
+      const url = safeUrl(f.url);
+      if (f.type === 'emote' && url) out.appendChild(h('img.emote', { src: url, alt: f.text }));
+      else if (f.type === 'cheermote') out.appendChild(h('span.cheermote', url ? h('img', { src: url, alt: '' }) : null, ' ' + (f.bits || f.text) + ' '));
+      else out.appendChild(document.createTextNode(f.text || ''));
+    } else out.appendChild(document.createTextNode(ev.text || ''));
+    return out;
+  }
+  // Turn the feed title into an alert sentence: "PixelPenguin just followed!"
+  const PHRASES = [
+    [/^New follower$/i, 'just followed!'], [/^New subscriber$/i, 'just subscribed!'], [/^New member(.*)$/i, 'just became a member$1!'],
+    [/^Raiding with (.*)$/i, 'is raiding with $1!'], [/^Super Chat (.*)$/i, 'sent a $1 Super Chat!'], [/^Super Sticker (.*)$/i, 'sent a $1 Super Sticker!'],
+    [/^Member for (.*)$/i, 'has been a member for $1!'], [/^Announcement$/i, 'made an announcement'], [/^Gave you a shoutout$/i, 'gave you a shoutout!'],
+    [/^Subscribed (.*)$/i, 'just subscribed $1!'], [/^Resubscribed - (.*)$/i, 'resubscribed for $1!'], [/^Cheered (.*)$/i, 'cheered $1!'], [/^Redeemed (.*)$/i, 'redeemed $1'],
+    [/^Gifted (.*)$/i, 'gifted $1!'], [/^Received (.*)$/i, 'received $1'], [/^Donated (.*)$/i, 'donated $1!'],
+  ];
+  function phrase(ev) {
+    const t = ev.title || E.typeDef(ev.type).label;
+    if (!ev.user?.name) return t;
+    for (const [re, rep] of PHRASES) if (re.test(t)) return t.replace(re, rep);
+    return t.charAt(0).toLowerCase() + t.slice(1);
+  }
+  function headline(ev) {
+    const frag = document.createDocumentFragment();
+    if (ev.user?.name) { frag.appendChild(h('b', ev.user.name)); frag.appendChild(document.createTextNode(' ')); }
+    frag.appendChild(document.createTextNode(phrase(ev)));
+    return frag;
+  }
+  function speak(text, voiceName) {
+    if (!('speechSynthesis' in window) || !text) return;
+    try { const u = new SpeechSynthesisUtterance(text); u.rate = 1.02; if (voiceName) { const v = speechSynthesis.getVoices().find((x) => x.name === voiceName); if (v) u.voice = v; } speechSynthesis.speak(u); } catch (_) { }
+  }
+  function show(ev, cfg) {
+    showing = true;
+    const def = E.typeDef(ev.type); const dur = Math.max(1500, Number(cfg.duration) || 7000);
+    document.body.className = 'theme-' + (cfg.theme || 'glass') + ' pos-' + (cfg.position || 'top-right');
+    currentVolume = cfg.volume ?? 0.6;
+    const avatar = safeUrl(ev.user?.avatar);
+    const el = h('div.alert', { style: { '--c': def.color, '--c22': AD.rgba(def.color, .22), '--c30': AD.rgba(def.color, .3), '--c45': AD.rgba(def.color, .45), '--c60': AD.rgba(def.color, .6) } },
+      h('div.icon', avatar ? h('img', { src: avatar, alt: '' }) : h('span', { html: E.iconSvg(ev.type), style: { display: 'inline-flex' } })),
+      h('div', h('div.kind', def.label), h('div.head', headline(ev)), (cfg.showMessage !== false && (ev.text || ev.fragments?.length)) ? h('div.msg', renderFragments(ev)) : null),
+      h('div.pf', ev.platform), h('div.bar', { style: { animationDuration: dur + 'ms' } }));
+    stage.appendChild(el);
+    if (!cfg.muted && def.sound) {
+      if (cfg.customSound) { try { const a = new Audio(cfg.customSound); a.volume = currentVolume; a.play().catch(() => AD.sounds.play(def.sound, { force: true, volume: currentVolume })); } catch (_) { AD.sounds.play(def.sound, { force: true, volume: currentVolume }); } }
+      else AD.sounds.play(def.sound, { force: true, volume: currentVolume });
+    }
+    if (cfg.tts) { const say = (ev.user?.name ? ev.user.name + ' ' : '') + phrase(ev).replace(/[()!]/g, '') + (cfg.showMessage !== false && ev.text ? '. ' + ev.text.slice(0, 200) : ''); setTimeout(() => speak(say, cfg.ttsVoice), 500); }
+    setTimeout(() => { el.classList.add('out'); setTimeout(() => { el.remove(); showing = false; pump(); }, 420); }, dur);
+  }
+
+  // Manual preview: overlay.html?preview=1 cycles sample alerts (no dock needed)
+  if (q.preview === '1') { const types = ['tw_follow', 'tw_sub', 'tw_gift', 'tw_cheer', 'tw_raid', 'tw_redeem', 'yt_superchat', 'yt_member']; let i = 0; setInterval(() => { enqueue(E.sample(types[i++ % types.length]), { duration: 4000, theme: q.theme || 'glass', position: q.position || 'top-right', showMessage: true, muted: q.sound !== '1' }); }, 4500); }
+  // Also accept postMessage from a parent page (embedding) and keyboard test (T)
+  window.addEventListener('message', (e) => { if (e.data && e.data.kind === 'alert') enqueue(e.data.ev, e.data.cfg || {}); });
+  window.addEventListener('keydown', (e) => { if (e.key === 't' || e.key === 'T') enqueue(E.sample('tw_follow'), { duration: 4000 }); });
+  if ('speechSynthesis' in window) speechSynthesis.getVoices();
+  AD.log('overlay ready');
+})(window.AD);
+</script>
+</body>
+</html>
