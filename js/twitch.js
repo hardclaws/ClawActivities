@@ -364,21 +364,21 @@
       }
       c.subs = Object.fromEntries(Object.keys(now).map((id) => [id, 1]));
       state.subCount = subs.filter((x) => x.user_id !== uid).length;
-    } catch (e) { if (e.status !== 403 && e.status !== 401) notes.push('subs: ' + e.message); }
-    // ---- bits (leaderboard for the current week; compare per-user totals) ----
+    } catch (e) { if (e.message !== 'skip') notes.push('subs: ' + e.message); }
+    // ---- bits: this week's leaderboard (top 100 cheerers, Mon-Sun Pacific); per-user totals are compared with the last check ----
     try {
-      const d = await helix('bits/leaderboard', { query: { period: 'week', count: 100 } });
+      // Helix requires started_at for every period except "all"; the week containing "now" is the current one
+      const d = await helix('bits/leaderboard', { query: { period: 'week', started_at: new Date().toISOString(), count: 100 } });
+      const range = d?.date_range?.started_at || 'week';
       const totals = {}; for (const x of d?.data || []) totals[x.user_id] = { score: Number(x.score || 0), name: x.user_name, login: x.user_login };
-      // a known user whose weekly score went down means the week rolled over (Monday 00:00 Pacific) -> just re-baseline
-      const reset = !!c.bitsTotals && Object.entries(c.bitsTotals).some(([id, score]) => (totals[id]?.score || 0) < score);
-      if (c.bitsTotals && !reset) {
+      if (c.bitsTotals && c.bitsRange === range) {
         for (const [id, x] of Object.entries(totals)) {
           const before = c.bitsTotals[id] || 0; const diff = x.score - before;
-          if (diff > 0) { AD.bus.emit('event', E.make('tw_cheer', { id: 'twbits-' + id + '-' + x.score, user: { id, login: x.login, name: x.name }, title: 'Cheered ' + AD.fmtNum(diff) + ' bits' + (reason === 'connect' ? ' while the dock was closed' : ''), amount: { value: diff, unit: 'bits', display: AD.fmtNum(diff) + ' bits' }, meta: { history: true, source: 'catchup' } })); found.bits += diff; }
+          if (diff > 0) { AD.bus.emit('event', E.make('tw_cheer', { id: 'twbits-' + id + '-' + range + '-' + x.score, user: { id, login: x.login, name: x.name }, title: 'Cheered ' + AD.fmtNum(diff) + ' bits' + (reason === 'connect' ? ' while the dock was closed' : ''), amount: { value: diff, unit: 'bits', display: AD.fmtNum(diff) + ' bits' }, meta: { history: true, source: 'catchup' } })); found.bits += diff; }
         }
-      }
-      c.bitsTotals = Object.fromEntries(Object.entries(totals).map(([id, x]) => [id, x.score]));
-    } catch (e) { if (e.status !== 403 && e.status !== 401) notes.push('bits: ' + e.message); }
+      } else if (c.bitsTotals) AD.log('Twitch catch-up: new leaderboard week - bits baseline reset');
+      c.bitsTotals = Object.fromEntries(Object.entries(totals).map(([id, x]) => [id, x.score])); c.bitsRange = range;
+    } catch (e) { notes.push('bits: ' + e.message); }
     // ---- channel point redemptions still waiting in the queue ----
     try {
       // Twitch only lets the app that created a reward read its redemptions, so this covers rewards made through this app's client ID
@@ -391,9 +391,9 @@
           AD.bus.emit('event', ev);
         }
       }
-    } catch (e) { if (e.status !== 403 && e.status !== 401) notes.push('redeems: ' + e.message); }
+    } catch (e) { notes.push('redeems: ' + e.message); }
     const wasFirst = c.firstRun, away = Date.now() - (c.lastRun || 0) > 2 * 60_000; c.firstRun = false; saveCatchState(c); catchBusy = false;
-    state.lastCatchUp = Date.now();
+    state.lastCatchUp = Date.now(); state.catchUpNotes = notes;
     const total = found.follows + found.subs + found.redeems + (found.bits ? 1 : 0);
     AD.log('Twitch catch-up (' + reason + '): ' + found.follows + ' follows, ' + found.subs + ' subs, ' + AD.fmtNum(found.bits) + ' bits, ' + found.redeems + ' pending redeems' + (notes.length ? ' - ' + notes.join('; ') : ''));
     if (reason === 'connect') {
@@ -611,7 +611,7 @@
 
   AD.twitch = {
     SCOPES, state, startDeviceAuth, cancelDeviceAuth, connect, disconnect, logout, helix, getAvatar, missingScopes, catchUp,
-    hasAuth: () => !!auth, authUser: () => auth?.user || state.user, badges, cheermotes,
+    hasAuth: () => !!auth, authUser: () => auth?.user || state.user, badges, cheermotes, _ws: () => ws,
     /** call once at startup */
     init() {
       if (auth?.user) state.user = auth.user;

@@ -1,6 +1,6 @@
 {
   "name": "activity-dock",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Free Twitch + YouTube activity feed dock and alert overlay for OBS Studio",
   "main": "server.js",
   "scripts": {

@@ -2,7 +2,7 @@
 (function (AD) {
   'use strict';
   const { h, esc } = AD; const E = AD.events; const S = AD.settings;
-  const VERSION = '1.0.0';
+  const VERSION = '1.1.0';
   const HIST_KEY = 'ad.history.v1', STATS_KEY = 'ad.stats.v1';
   const q = AD.parseHashParams();
   const DEV = q.dev === '1';
@@ -227,7 +227,7 @@
     el.appendChild(body);
     el.appendChild(h('span.time', { title: new Date(ev.ts).toLocaleString() + (ev.meta?.source === 'catchup' ? ' - found by catch-up (happened while the dock was closed or missed live)' : '') }, f.timestamps ? AD.fmtWhen(ev.ts) : ''));
     if (ev.meta?.source === 'catchup') el.classList.add('catchup');
-    el.addEventListener('click', (e) => {
+    if (DEV) el.addEventListener('click', (e) => { // developer mode only: show the raw event
       if (e.target.closest('a,img') || window.getSelection()?.toString()) return;
       if (!body.querySelector('.more')) body.appendChild(h('pre.more', JSON.stringify({ ...ev, fragments: ev.fragments ? ev.fragments.length + ' fragment(s)' : undefined }, null, 1)));
       el.classList.toggle('open');
@@ -268,7 +268,7 @@
     if (visible) { empty?.remove(); return; }
     if (!empty) {
       const s = S.get();
-      const msg = !AD.twitch.hasAuth() && !s.youtube.enabled ? [h('b', 'Welcome!'), h('br'), 'Open ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); openSettings('twitch'); } }, 'Settings'), ' to connect Twitch and/or YouTube.', h('br'), 'Use the ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); openSettings('test'); } }, 'Test'), ' tab to fire sample events.'] : history.length ? ['Nothing matches the current filters.'] : ['Waiting for activity…'];
+      const msg = !AD.twitch.hasAuth() && !s.youtube.enabled ? [h('b', 'Welcome!'), h('br'), 'Open ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); openSettings('twitch'); } }, 'Settings'), ' to connect Twitch and/or YouTube.', h('br'), 'Use the ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); openSettings('test'); } }, 'Test'), ' tab to fire sample events.'] : history.length ? ['Nothing matches the current filters.'] : [h('b', 'No activity yet'), h('br'), 'Live events appear here the moment they happen. On connect the dock also loads recent follows, current subs and pending redeems from Twitch; raids, cheers and YouTube events are recorded from the moment the dock is running (Twitch and YouTube keep no history of those an app could read).'];
       empty = h('div.empty', msg); $feed.appendChild(empty);
     }
   }
@@ -298,6 +298,11 @@
   window.addEventListener('pagehide', () => { persistHistory.flush(); saveStats.flush(); });
   const queuedIds = new Set();
   function onEvent(ev) {
+    if (ev.type === 'sys' || ev.meta?.notice) { // status messages: brief notice + log, never a feed row
+      AD.log(ev.title + (ev.text ? ' - ' + ev.text : ''));
+      if (!ev.meta?.history || ev.meta?.notify) AD.toast(ev.title, 4000);
+      return;
+    }
     if (nodes.has(ev.id) || queuedIds.has(ev.id)) return; // dedupe (e.g. same chat message from two subscriptions)
     const live = !ev.meta?.history;
     if (paused && !ev.test) { pausedQueue.push(ev); queuedIds.add(ev.id); if (live) { maybeSound(ev); maybeAlert(ev); } refreshHeader(); return; }
@@ -421,7 +426,9 @@
         check('Catch up on connect', 'twitch.catchUp'),
         check('Re-check every 5 minutes while connected', 'twitch.poll'),
         h('div.btnrow', h('button.btn.sm', { onclick: async (e) => { const b = e.currentTarget; b.disabled = true; b.textContent = 'Checking…'; try { const r = await AD.twitch.catchUp('manual'); AD.toast(r ? ('Found ' + r.follows + ' follows, ' + r.subs + ' subs, ' + AD.fmtNum(r.bits) + ' bits, ' + r.redeems + ' pending redeems') : 'Not connected'); } catch (err) { AD.toast(err.message); } b.disabled = false; b.textContent = 'Check now'; } }, 'Check now'),
-          h('span.hint', st.lastCatchUp ? 'Last check ' + AD.fmtTime(st.lastCatchUp, true) + (st.subCount != null ? ' - ' + st.subCount + ' current subscribers' : '') : '')));
+          h('span.hint', st.lastCatchUp ? 'Last check ' + AD.fmtTime(st.lastCatchUp, true) + (st.subCount != null ? ' - ' + st.subCount + ' current subscribers' : '') + (st.followerCount != null ? ', ' + AD.fmtNum(st.followerCount) + ' followers' : '') : '')),
+        st.catchUpNotes?.length ? h('div.card.warn', h('b', 'Catch-up problems: '), st.catchUpNotes.join('; ')) : null,
+        h('p.hint', 'Not available from Twitch afterwards (no API exists): past raids, who cheered when, fulfilled channel-point redeems, hype trains. Those are recorded live while the dock is running and kept in the feed history.'));
       out.push(h('h3', 'What to track'),
         check('Chat messages', 'twitch.chat', '(uncheck to save CPU on very busy chats)', restartTwitch),
         check('Chat notices', 'twitch.notices', '(announcements, watch streaks, shared chat events)', restartTwitch),

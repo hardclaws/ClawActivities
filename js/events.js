@@ -127,7 +127,7 @@
       case 'yt_giftmember': { const n = rnd([5, 10, 20]); return make(type, { user: { name }, title: 'Gifted ' + n + ' memberships', amount: { value: n, unit: 'subs', display: n + ' members' }, test: true }); }
       case 'yt_giftrecv': return make(type, { user: { name }, title: 'Received a gift membership', test: true });
       case 'yt_subscriber': return make(type, { user: { name }, title: 'New subscriber', test: true });
-      case 'yt_system': return make(type, { user: null, title: 'Connected to YouTube chat', test: true });
+      case 'yt_system': return make(type, { user: { name: 'YouTube' }, title: 'Members-only chat enabled', test: true });
       default: return make('sys', { title: 'Test event', test: true });
     }
   }

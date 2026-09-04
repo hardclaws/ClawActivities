@@ -206,13 +206,13 @@
   }
   function onChatEnded(reason) {
     AD.log('YouTube: chat ended (' + reason + ')');
-    AD.bus.emit('event', E.make('yt_system', { title: reason === 'liveChatDisabled' ? 'Live chat is disabled on this stream' : 'YouTube stream ended', meta: { reason } }));
+    AD.bus.emit('event', E.make('yt_system', { title: reason === 'liveChatDisabled' ? 'Live chat is disabled on this stream' : 'YouTube stream ended', meta: { reason, notice: true } }));
     state.liveChatId = null; state.videoId = null; setStatus('idle', 'Waiting for the next stream…');
     resolveTimer = setTimeout(() => { if (running) start().catch(() => { }); }, auth ? 60_000 : 5 * 60_000);
   }
   function onQuota(err) {
     AD.log('error', err.message);
-    if (state.helperOk) { AD.log('warn', 'YouTube: quota exceeded - switching to the helper'); AD.bus.emit('event', E.make('yt_system', { title: 'YouTube API quota exceeded - switched to helper feed' })); return startHelper(); }
+    if (state.helperOk) { AD.log('warn', 'YouTube: quota exceeded - switching to the helper'); AD.bus.emit('event', E.make('yt_system', { title: 'YouTube API quota exceeded - switched to helper feed', meta: { notice: true } })); return startHelper(); }
     setStatus('error', 'Daily API quota exceeded (resets at midnight Pacific). Start the local server (start-dock.bat / node server.js) to keep going without quota.');
     running = false;
   }
@@ -298,11 +298,11 @@
       case 'userBannedEvent': { const d = sn.userBannedDetails || {}; return E.make('yt_system', { ...base, user: ytUser({ displayName: d.bannedUserDetails?.displayName, channelId: d.bannedUserDetails?.channelId, profileImageUrl: d.bannedUserDetails?.profileImageUrl }), title: (d.banType === 'temporary' ? 'Timed out' : 'Banned') + (d.banDurationSeconds ? ' for ' + d.banDurationSeconds + 's' : '') }); }
       case 'messageDeletedEvent': AD.bus.emit('event:delete', 'yt-' + (sn.messageDeletedDetails?.deletedMessageId || '')); return null;
       case 'messageRetractedEvent': AD.bus.emit('event:delete', 'yt-' + (sn.messageRetractedDetails?.retractedMessageId || '')); return null;
-      case 'chatEndedEvent': return E.make('yt_system', { ...base, title: 'Chat ended' });
-      case 'sponsorOnlyModeStartedEvent': return E.make('yt_system', { ...base, title: 'Members-only chat enabled' });
-      case 'sponsorOnlyModeEndedEvent': return E.make('yt_system', { ...base, title: 'Members-only chat disabled' });
+      case 'chatEndedEvent': return E.make('yt_system', { ...base, title: 'Chat ended', meta: { notice: true } });
+      case 'sponsorOnlyModeStartedEvent': return E.make('yt_system', { ...base, title: 'Members-only chat enabled', meta: { notice: true } });
+      case 'sponsorOnlyModeEndedEvent': return E.make('yt_system', { ...base, title: 'Members-only chat disabled', meta: { notice: true } });
       case 'tombstone': return null;
-      default: return E.make('yt_system', { ...base, title: sn.type || 'event', text: sn.displayMessage || '' });
+      default: return sn.displayMessage ? E.make('yt_system', { ...base, title: '', text: sn.displayMessage }) : null;
     }
   }
 
@@ -344,7 +344,7 @@
       case 'milestone': return E.make('yt_milestone', { ...base, title: r.headline || 'Membership milestone', meta: { level: r.level } });
       case 'gift': return E.make('yt_giftmember', { ...base, title: r.headline || 'Gifted memberships', amount: r.count ? { value: r.count, unit: 'subs', display: r.count + ' members' } : null });
       case 'giftrecv': return E.make('yt_giftrecv', { ...base, title: r.headline || 'Received a gift membership' });
-      case 'system': return E.make('yt_system', { ...base, title: r.headline || r.text || 'YouTube', text: r.headline ? r.text : '' });
+      case 'system': return E.make('yt_system', { ...base, title: r.headline || r.text || 'YouTube', text: r.headline ? r.text : '', meta: { notice: true } });
       default: return null;
     }
   }

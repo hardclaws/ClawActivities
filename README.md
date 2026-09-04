@@ -117,9 +117,11 @@ Twitch only *pushes* events (EventSub) while the dock is open. To still show wha
 | Bits | Get Bits Leaderboard (current week) compared per user | `bits:read` |
 | Channel-point redeems still in the queue | Get Custom Reward Redemption (UNFULFILLED) | rewards created through this app |
 
-Caught-up items have a dashed left border and a `↺` next to the time, and a short "While you were away: …" line summarises them. On the very first connect the dock loads the follows of the last 7 days so the feed is not empty; those are not counted in the session stats. (Channels with more than 2,000 subscribers get a count instead of individual subs.) Everything is configurable under **Settings → Twitch → Activity while the dock is closed**, including a **Check now** button.
+Caught-up items have a dashed left border and a `↺` next to the time; a short "While you were away: …" notice pops up briefly (it is also in **Settings → About → Log**). On the very first connect the dock loads the follows of the last 7 days so the feed is not empty; those are not counted in the session stats. (Channels with more than 2,000 subscribers get a count instead of individual subs.) Everything is configurable under **Settings → Twitch → Activity while the dock is closed**, including a **Check now** button.
 
-YouTube (Google sign-in): the last 50 public subscribers and the Super Chats of the last 30 days are loaded on connect, and new subscribers are checked every 2 minutes – also while you are not live.
+YouTube (Google sign-in): the last 50 public subscribers and the Super Chats of the last 30 days are loaded on connect, and new subscribers are checked every 2 minutes – also while you are not live. **Without the Google sign-in there is no YouTube history at all** – the helper only sees the live chat of a running stream.
+
+**What cannot be recovered afterwards** (no tool can – Twitch simply has no API for it): past **raids**, *who* cheered *when* (only weekly totals per user exist), already fulfilled channel-point redeems, past hype trains, and YouTube memberships/gifts older than the current stream. Tools that show those had to be running at the time – the dock does the same: everything it sees live is kept in its history (last 250 events survive a restart), so leave the dock open in OBS and history builds up from the first stream on.
 
 ## 6. Tips & troubleshooting
 
