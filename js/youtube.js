@@ -5,7 +5,7 @@
  */
 (function (AD) {
   'use strict';
-  const AUTH_KEY = 'ad.youtube.auth.v1';
+  const AUTH_KEY = 'ad.youtube.auth.v1', SUBS_KEY = 'ad.youtube.subs.v1', SC_KEY = 'ad.youtube.superchats.v1';
   const API = 'https://youtube.googleapis.com/youtube/v3/';
   const OAUTH_DEVICE = 'https://oauth2.googleapis.com/device/code';
   const OAUTH_TOKEN = 'https://oauth2.googleapis.com/token';
@@ -218,20 +218,51 @@
   }
 
   /* --- subscribers (OAuth only; public subscriptions only) --- */
+  let lastSubsPoll = 0;
   async function pollSubscribers(myGen) {
     if (!auth || !S().subscribers) return;
+    clearTimeout(subsTimer);
+    // start() may run every minute while idle; keep this at one request per 2 minutes
+    if (Date.now() - lastSubsPoll < 110_000) { subsTimer = setTimeout(() => pollSubscribers(myGen), 120_000 - (Date.now() - lastSubsPoll)); return; }
+    lastSubsPoll = Date.now();
     try {
       const d = await api('subscriptions', { part: 'subscriberSnippet', myRecentSubscribers: 'true', maxResults: 50 }, { cost: COST.subscriptions });
       const items = d.items || [];
-      if (knownSubscribers === null) { knownSubscribers = new Set(items.map((i) => i.id)); }
-      else for (const it of items.slice().reverse()) {
-        if (knownSubscribers.has(it.id)) continue; knownSubscribers.add(it.id);
-        const sn = it.subscriberSnippet || {};
-        AD.bus.emit('event', E.make('yt_subscriber', { id: 'ytsub-' + it.id, user: { name: sn.title, id: sn.channelId, avatar: sn.thumbnails?.default?.url }, title: 'New subscriber' }));
+      const firstRun = knownSubscribers === null;
+      if (firstRun) {
+        knownSubscribers = new Set(AD.store.get(SUBS_KEY, []));
+        // never seen anything: show the 50 most recent public subscribers as history so the feed is not empty
+        if (!knownSubscribers.size && S().history !== false) for (const it of items.slice().reverse()) { knownSubscribers.add(it.id); const sn = it.subscriberSnippet || {}; AD.bus.emit('event', E.make('yt_subscriber', { id: 'ytsub-' + it.id, ts: Date.parse(it.snippet?.publishedAt) || Date.now(), user: { name: sn.title, id: sn.channelId, avatar: sn.thumbnails?.default?.url }, title: 'New subscriber', meta: { history: true, source: 'catchup' } })); }
       }
-      if (knownSubscribers.size > 2000) knownSubscribers = new Set(items.map((i) => i.id));
+      let newOnes = 0;
+      for (const it of items.slice().reverse()) {
+        if (knownSubscribers.has(it.id)) continue; knownSubscribers.add(it.id); newOnes++;
+        const sn = it.subscriberSnippet || {};
+        AD.bus.emit('event', E.make('yt_subscriber', { id: 'ytsub-' + it.id, ts: Date.parse(it.snippet?.publishedAt) || Date.now(), user: { name: sn.title, id: sn.channelId, avatar: sn.thumbnails?.default?.url }, title: 'New subscriber', meta: firstRun ? { history: true, source: 'catchup' } : {} }));
+      }
+      if (firstRun && newOnes) AD.log('YouTube catch-up: ' + newOnes + ' new subscribers since last session');
+      AD.store.set(SUBS_KEY, [...knownSubscribers].slice(-500));
+      if (knownSubscribers.size > 2000) knownSubscribers = new Set([...knownSubscribers].slice(-500));
     } catch (e) { if (isQuotaError(e)) { AD.log('warn', 'subscriber poll: ' + e.message); return; } AD.log('warn', 'subscriber poll: ' + e.message); }
     if (running && myGen === gen) subsTimer = setTimeout(() => pollSubscribers(myGen), 120_000);
+  }
+
+  /* --- Super Chat / Super Sticker history: superChatEvents.list covers the last 30 days (OAuth only, 1 unit) --- */
+  let superChatsLoaded = false;
+  async function loadSuperChatHistory() {
+    if (!auth || superChatsLoaded || S().history === false) return; superChatsLoaded = true;
+    try {
+      const d = await api('superChatEvents', { part: 'snippet', maxResults: 50 }, { cost: 1 });
+      const seen = new Set(AD.store.get(SC_KEY, [])); let n = 0;
+      for (const it of (d.items || []).slice().reverse()) {
+        const sn = it.snippet || {}; const isNew = !seen.has(it.id); seen.add(it.id);
+        const amt = Number(sn.amountMicros || 0) / 1e6, disp = sn.displayString || AD.fmtMoney(sn.amountMicros, sn.currency);
+        const ev = E.make(sn.isSuperStickerEvent ? 'yt_sticker' : 'yt_superchat', { id: 'ytsc-' + it.id, ts: Date.parse(sn.createdAt) || Date.now(), user: { name: sn.supporterDetails?.displayName, id: sn.supporterDetails?.channelId, avatar: sn.supporterDetails?.profileImageUrl }, title: (sn.isSuperStickerEvent ? 'Super Sticker ' : 'Super Chat ') + disp, text: sn.commentText || sn.superStickerMetadata?.altText || '', amount: { value: amt, unit: 'currency', display: disp, currency: sn.currency }, meta: { tier: sn.messageType, history: true, source: 'catchup' } });
+        AD.bus.emit('event', ev); if (isNew) n++;
+      }
+      AD.store.set(SC_KEY, [...seen].slice(-300));
+      AD.log('YouTube: loaded ' + (d.items || []).length + ' super chats from the last 30 days (' + n + ' new)');
+    } catch (e) { AD.log('warn', 'super chat history: ' + e.message); }
   }
 
   /* --- map official liveChatMessage resources --- */
@@ -320,7 +351,7 @@
 
   /* ---------------- lifecycle ---------------- */
   function closeStreams() {
-    clearTimeout(pollTimer); clearTimeout(subsTimer); clearTimeout(retryTimer); clearTimeout(resolveTimer);
+    clearTimeout(pollTimer); clearTimeout(subsTimer); clearTimeout(retryTimer); clearTimeout(resolveTimer); subsTimer = null;
     try { streamAbort?.abort(); } catch (_) { } streamAbort = null;
     try { sse?.close(); } catch (_) { } sse = null;
   }
@@ -339,11 +370,11 @@
     try { target = await resolveTarget(); }
     catch (e) { if (isQuotaError(e)) return onQuota(e); setStatus('error', e.message); AD.log('warn', 'YouTube: ' + e.message); resolveTimer = setTimeout(() => running && start().catch(() => { }), 2 * 60_000); return; }
     if (myGen !== gen) return;
+    if (auth) { loadSuperChatHistory(); pollSubscribers(myGen); }
     if (!target) { setStatus('idle', 'No live stream found - will check again' + (auth ? ' in 1 min' : ' in 10 min')); resolveTimer = setTimeout(() => running && start().catch(() => { }), auth ? 60_000 : 10 * 60_000); return; }
     Object.assign(state, target);
     AD.log('YouTube: live chat ' + target.liveChatId + ' (' + target.title + ')');
     if (auth && !state.user) api('channels', { part: 'snippet', mine: 'true' }, { cost: COST.channels }).then((d) => { const c = d.items?.[0]; if (c) { state.user = { title: c.snippet.title, channelId: c.id, avatar: c.snippet.thumbnails?.default?.url }; AD.bus.emit('youtube:status', state); } }).catch(() => { });
-    pollSubscribers(myGen);
     if (s.useStream !== false) { state.method = 'stream'; runStream(myGen); } else { state.method = 'poll'; runPoll(myGen); }
   }
   function stop() { running = false; gen++; closeStreams(); state.liveChatId = null; setStatus('disconnected'); }

@@ -271,7 +271,7 @@
           return;
         }
         state.sessionId = msg.payload.session.id;
-        try { await createSubscriptions(state.sessionId); backoff = 1000; setStatus('connected'); }
+        try { await createSubscriptions(state.sessionId); backoff = 1000; setStatus('connected'); catchUp('connect').catch((e) => AD.log('warn', 'catch-up: ' + e.message)); scheduleCatchUpPoll(); }
         catch (e) {
           // Nothing could be subscribed (wrong scopes / not affiliate for everything?) - stop and show why instead of hammering Twitch.
           const first = Object.values(state.subs).find((v) => v !== 'enabled') || '';
@@ -291,12 +291,134 @@
         AD.bus.emit('twitch:status', state); return;
       }
       case 'notification': {
+        noteLive(msg.payload.subscription?.type, msg.payload.event);
         try { const ev = mapNotification(msg.payload.subscription, msg.payload.event); if (ev) AD.bus.emit('event', ev); }
         catch (e) { AD.log('error', 'Twitch: failed to map ' + msg.payload.subscription?.type + ': ' + (e.stack || e)); }
         return;
       }
     }
   }
+
+  /* ---------------- catch-up: activity that happened while the dock was closed ----------------
+   * EventSub only delivers while the socket is open. Like other activity feeds we therefore ask Helix on connect:
+   *   - Get Channel Followers   (followed_at)                         -> follows since last time
+   *   - Get Broadcaster Subscriptions (no timestamps)                 -> new subscriber user ids vs. last known set
+   *   - Get Bits Leaderboard (period=week)                            -> bits per user vs. last known totals
+   *   - Get Custom Reward Redemption (status UNFULFILLED, per reward) -> redeems still in the queue
+   * The same checks run every 5 minutes as a safety net while connected (EventSub occasionally drops events).
+   * Everything found is emitted with meta.history = true (no sound / overlay alert), timestamped when known. */
+  const CATCH_KEY = 'ad.twitch.catchup.v1';
+  let catchTimer = null, catchBusy = false;
+  const evTs = (iso) => { const t = Date.parse(iso); return Number.isFinite(t) ? t : Date.now(); };
+  function loadCatchState() { const c = AD.store.get(CATCH_KEY, null); return c && c.user === state.user?.id ? c : { user: state.user?.id, firstRun: true, lastFollowAt: null, subs: null, bitsTotals: null, lastRun: 0 }; }
+  function saveCatchState(c) { c.user = state.user?.id; c.lastRun = Date.now(); AD.store.set(CATCH_KEY, c); }
+
+  async function catchUp(reason) {
+    if (!auth || !state.user || catchBusy || S().skipValidate) return;
+    if (reason === 'connect' && !S().catchUp) return;
+    if (reason === 'poll' && !S().poll) return;
+    catchBusy = true;
+    const c = loadCatchState(); const found = { follows: 0, subs: 0, bits: 0, redeems: 0 }; const notes = [];
+    const uid = state.user.id;
+    // ---- follows ----
+    try {
+      const since = c.lastFollowAt ? Date.parse(c.lastFollowAt) : (c.firstRun ? Date.now() - 7 * 86400e3 : 0);
+      // Helix returns newest first: page until we reach followers we already know (max 10 pages)
+      const pages = []; let after, total = null;
+      for (let i = 0; i < 10; i++) {
+        const d = await helix('channels/followers', { query: { broadcaster_id: uid, first: 100, after } });
+        const rows = d?.data || []; pages.push(...rows); if (total == null && d?.total != null) total = d.total;
+        after = d?.pagination?.cursor; if (!after || !rows.length || Date.parse(rows[rows.length - 1].followed_at) <= since) break;
+      }
+      const rows = pages.filter((f) => f.followed_at).sort((a, b) => Date.parse(a.followed_at) - Date.parse(b.followed_at));
+      for (const f of rows) {
+        if (Date.parse(f.followed_at) <= since) continue;
+        const ev = E.make('tw_follow', { id: 'twf-' + f.user_id + '-' + f.followed_at, ts: evTs(f.followed_at), user: { id: f.user_id, login: f.user_login, name: f.user_name }, title: 'New follower', meta: { history: true, source: 'catchup', backfill: c.firstRun } });
+        AD.bus.emit('event', ev); found.follows++;
+      }
+      if (rows.length) c.lastFollowAt = rows[rows.length - 1].followed_at; else if (!c.lastFollowAt) c.lastFollowAt = new Date().toISOString();
+      if (total != null) state.followerCount = total;
+    } catch (e) { notes.push('followers: ' + e.message); if (e.status === 401 || e.status === 403) AD.log('warn', 'catch-up followers: ' + e.message + ' (needs moderator:read:followers - reconnect to grant it)'); }
+    // ---- subscriptions (affiliate/partner only) ----
+    try {
+      const firstPage = await helix('subscriptions', { query: { broadcaster_id: uid, first: 100 } });
+      const total = Number(firstPage?.total || 0);
+      if (total > 2000) { // too many to list on every check: track the count only
+        if (c.subTotal != null && total > c.subTotal) { const n = total - c.subTotal; AD.bus.emit('event', E.make('tw_sub', { title: n + ' new subscriber' + (n === 1 ? '' : 's') + ' since the last check', text: 'Channels with more than 2,000 subscribers are tracked by count only.', meta: { history: true, source: 'catchup', count: n } })); found.subs += n; }
+        c.subTotal = total; state.subCount = total; throw Object.assign(new Error('skip'), { status: 403 });
+      }
+      let subs = firstPage?.data || []; let after = firstPage?.pagination?.cursor;
+      while (after && subs.length < 2100) { const d = await helix('subscriptions', { query: { broadcaster_id: uid, first: 100, after } }); subs = subs.concat(d?.data || []); after = d?.pagination?.cursor; }
+      const now = {}; for (const x of subs) now[x.user_id] = { tier: x.tier, gift: !!x.is_gift, gifter: x.gifter_name || null, login: x.user_login, name: x.user_name };
+      c.subTotal = total;
+      if (c.subs) {
+        const ids = Object.keys(now).filter((id) => !c.subs[id] && id !== uid);
+        for (const id of ids) {
+          const x = now[id]; const tier = AD.tierName(x.tier);
+          const ev = x.gift
+            ? E.make('tw_giftrecv', { id: 'twsub-' + id + '-' + Date.now(), user: { id, login: x.login, name: x.name }, title: 'Received a gift sub (' + tier + ')' + (x.gifter ? ' from ' + x.gifter : ''), meta: { tier: x.tier, history: true, source: 'catchup', gifter: x.gifter } })
+            : E.make('tw_sub', { id: 'twsub-' + id + '-' + Date.now(), user: { id, login: x.login, name: x.name }, title: 'Subscribed (' + tier + ')', meta: { tier: x.tier, history: true, source: 'catchup' } });
+          AD.bus.emit('event', ev); found.subs++;
+        }
+        if (ids.length > 5 && found.subs) AD.log('Twitch catch-up: ' + ids.length + ' new subscribers since last session');
+      }
+      c.subs = Object.fromEntries(Object.keys(now).map((id) => [id, 1]));
+      state.subCount = subs.filter((x) => x.user_id !== uid).length;
+    } catch (e) { if (e.status !== 403 && e.status !== 401) notes.push('subs: ' + e.message); }
+    // ---- bits (leaderboard for the current week; compare per-user totals) ----
+    try {
+      const d = await helix('bits/leaderboard', { query: { period: 'week', count: 100 } });
+      const totals = {}; for (const x of d?.data || []) totals[x.user_id] = { score: Number(x.score || 0), name: x.user_name, login: x.user_login };
+      // a known user whose weekly score went down means the week rolled over (Monday 00:00 Pacific) -> just re-baseline
+      const reset = !!c.bitsTotals && Object.entries(c.bitsTotals).some(([id, score]) => (totals[id]?.score || 0) < score);
+      if (c.bitsTotals && !reset) {
+        for (const [id, x] of Object.entries(totals)) {
+          const before = c.bitsTotals[id] || 0; const diff = x.score - before;
+          if (diff > 0) { AD.bus.emit('event', E.make('tw_cheer', { id: 'twbits-' + id + '-' + x.score, user: { id, login: x.login, name: x.name }, title: 'Cheered ' + AD.fmtNum(diff) + ' bits' + (reason === 'connect' ? ' while the dock was closed' : ''), amount: { value: diff, unit: 'bits', display: AD.fmtNum(diff) + ' bits' }, meta: { history: true, source: 'catchup' } })); found.bits += diff; }
+        }
+      }
+      c.bitsTotals = Object.fromEntries(Object.entries(totals).map(([id, x]) => [id, x.score]));
+    } catch (e) { if (e.status !== 403 && e.status !== 401) notes.push('bits: ' + e.message); }
+    // ---- channel point redemptions still waiting in the queue ----
+    try {
+      // Twitch only lets the app that created a reward read its redemptions, so this covers rewards made through this app's client ID
+      const rewards = (await helix('channel_points/custom_rewards', { query: { broadcaster_id: uid, only_manageable_rewards: true } }))?.data || [];
+      for (const r of rewards.slice(0, 25)) {
+        let reds = []; try { reds = (await helix('channel_points/custom_rewards/redemptions', { query: { broadcaster_id: uid, reward_id: r.id, status: 'UNFULFILLED', sort: 'OLDEST', first: 50 } }))?.data || []; } catch (_) { continue; }
+        for (const x of reds) {
+          const ev = E.make('tw_redeem', { id: 'twred-' + x.id, ts: evTs(x.redeemed_at), user: { id: x.user_id, login: x.user_login, name: x.user_name }, title: 'Redeemed ' + (r.title || 'a reward'), text: x.user_input || '', amount: { value: Number(r.cost || 0), unit: 'points', display: AD.fmtNum(r.cost) + ' pts' }, meta: { reward: r.title, reward_id: r.id, redemption_id: x.id, status: x.status, history: true, source: 'catchup', backfill: c.firstRun || evTs(x.redeemed_at) < (c.lastRun || 0) } });
+          if (!AD.app || !AD.app.has(ev.id)) found.redeems++;
+          AD.bus.emit('event', ev);
+        }
+      }
+    } catch (e) { if (e.status !== 403 && e.status !== 401) notes.push('redeems: ' + e.message); }
+    const wasFirst = c.firstRun, away = Date.now() - (c.lastRun || 0) > 2 * 60_000; c.firstRun = false; saveCatchState(c); catchBusy = false;
+    state.lastCatchUp = Date.now();
+    const total = found.follows + found.subs + found.redeems + (found.bits ? 1 : 0);
+    AD.log('Twitch catch-up (' + reason + '): ' + found.follows + ' follows, ' + found.subs + ' subs, ' + AD.fmtNum(found.bits) + ' bits, ' + found.redeems + ' pending redeems' + (notes.length ? ' - ' + notes.join('; ') : ''));
+    if (reason === 'connect') {
+      const what = [];
+      if (found.follows) what.push(found.follows + ' new follower' + (found.follows === 1 ? '' : 's'));
+      if (found.subs) what.push(found.subs + ' new sub' + (found.subs === 1 ? '' : 's'));
+      if (found.bits) what.push(AD.fmtNum(found.bits) + ' bits');
+      if (found.redeems) what.push(found.redeems + ' pending redeem' + (found.redeems === 1 ? '' : 's'));
+      if (wasFirst) AD.bus.emit('event', E.make('sys', { title: 'Connected to Twitch as ' + state.user.name, text: 'Loaded the last 7 days of follows' + (state.subCount != null ? ', ' + state.subCount + ' current subscriber' + (state.subCount === 1 ? '' : 's') : '') + '. From now on everything that happens while the dock is closed is caught up here on the next start.', meta: { history: true } }));
+      else if (what.length && away) AD.bus.emit('event', E.make('sys', { title: 'While you were away: ' + what.join(', '), meta: { history: true } }));
+    }
+    AD.bus.emit('twitch:status', state);
+    return found;
+  }
+  /** keep the catch-up baseline in sync with live EventSub notifications (so a later poll does not repeat them) */
+  function noteLive(type, e) {
+    try {
+      const c = loadCatchState(); let dirty = false;
+      if (type === 'channel.follow' && e?.followed_at && (!c.lastFollowAt || Date.parse(e.followed_at) > Date.parse(c.lastFollowAt))) { c.lastFollowAt = e.followed_at; dirty = true; }
+      if ((type === 'channel.subscribe') && e?.user_id && c.subs && !c.subs[e.user_id]) { c.subs[e.user_id] = 1; dirty = true; }
+      if ((type === 'channel.cheer' || type === 'channel.bits.use') && e?.user_id && e?.bits && c.bitsTotals) { c.bitsTotals[e.user_id] = (c.bitsTotals[e.user_id] || 0) + Number(e.bits); dirty = true; }
+      if (dirty) saveCatchState(c);
+    } catch (_) { }
+  }
+  function scheduleCatchUpPoll() { clearInterval(catchTimer); catchTimer = setInterval(() => { if (state.status === 'connected') catchUp('poll').catch((e) => AD.log('warn', 'catch-up poll: ' + e.message)); }, 5 * 60_000); }
 
   async function connect() {
     if (!auth) { setStatus('disconnected', 'Not connected'); return; }
@@ -316,7 +438,7 @@
     }
   }
   function disconnect() {
-    clearTimeout(reconnectTimer); clearTimeout(keepaliveTimer); clearInterval(validateTimer); clearTimeout(refreshTimer);
+    clearTimeout(reconnectTimer); clearTimeout(keepaliveTimer); clearInterval(validateTimer); clearTimeout(refreshTimer); clearInterval(catchTimer);
     if (ws) ws._manual = true; if (wsReconnecting) wsReconnecting._manual = true;
     try { ws?.close(); } catch (_) { } try { wsReconnecting?.close(); } catch (_) { }
     ws = null; wsReconnecting = null; state.sessionId = null; state.subs = {};
@@ -488,7 +610,7 @@
   }
 
   AD.twitch = {
-    SCOPES, state, startDeviceAuth, cancelDeviceAuth, connect, disconnect, logout, helix, getAvatar, missingScopes,
+    SCOPES, state, startDeviceAuth, cancelDeviceAuth, connect, disconnect, logout, helix, getAvatar, missingScopes, catchUp,
     hasAuth: () => !!auth, authUser: () => auth?.user || state.user, badges, cheermotes,
     /** call once at startup */
     init() {

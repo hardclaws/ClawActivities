@@ -49,6 +49,20 @@
 <body>
 <div id="stage"></div>
 <div id="status">Activity Dock overlay - waiting for the dock…</div>
+<script>
+/* Boot guard (ES5): report missing/broken script files in the status box instead of staying silent. */
+(function () {
+  var shown = false;
+  window.addEventListener('error', function (e) {
+    var el = document.getElementById('status'); if (!el || shown) return;
+    var t = e.target;
+    if (t && t !== window && t.tagName === 'SCRIPT') el.textContent = 'Overlay error: could not load ' + t.getAttribute('src') + ' - the js/ folder must be uploaded next to overlay.html.';
+    else if (e.message && !window.__adOverlayReady) el.textContent = 'Overlay error: ' + e.message + (/SyntaxError/.test(e.message) ? ' (browser too old - needs OBS 28+)' : '');
+    else return;
+    shown = true; el.classList.remove('hide');
+  }, true);
+})();
+</script>
 <script src="js/util.js"></script>
 <script src="js/events.js"></script>
 <script src="js/sounds.js"></script>
@@ -68,6 +82,7 @@
   let statusTimer = null;
   function setStatus(html, keep) { status.innerHTML = html; status.classList.remove('hide'); clearTimeout(statusTimer); if (!keep && !showStatus) statusTimer = setTimeout(() => status.classList.add('hide'), 6000); }
 
+  window.__adOverlayReady = true;
   const relay = new AD.Relay('overlay');
   // Transport 1: the local server's SSE relay. Try same origin, then ?server=, then the default local address; keep retrying until found.
   const candidates = [...new Set([/^https?:$/.test(location.protocol) ? location.origin : null, q.server ? q.server.replace(/\/$/, '') : null, 'http://127.0.0.1:8520', 'http://localhost:8520'].filter(Boolean))];

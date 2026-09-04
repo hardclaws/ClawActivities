@@ -91,7 +91,7 @@ The overlay receives alerts from the dock through the local server, so it works 
 
 The dock is 100 % static, so you can also host it on GitHub Pages and add the URL to OBS – no local install at all for Twitch:
 
-1. Fork / push this repository to GitHub.
+1. Fork / push this repository to GitHub – or create an empty repository and use **Add file → Upload files**: extract the zip and **drag the whole set of files and folders** (`index.html`, `overlay.html`, `js`, `css`, …) onto the upload page. Do not use the *choose your files* button for the folders – it uploads only files, and without the `js` and `css` folders the dock is just a black page. Afterwards the repository's file list must show the folders `js` and `css` next to `index.html`.
 2. **Settings → Pages → Build and deployment → Source: Deploy from a branch** → branch `main`, folder `/ (root)` → Save. A minute later your copy is live.
 3. Add `https://<your-user>.github.io/activity-dock/` as a custom browser dock in OBS.
 
@@ -106,14 +106,33 @@ What works from Pages:
 
 When the hosted dock is open in a regular browser (Chrome 142+) it may ask once for permission to "connect to devices on your local network" when it talks to the local server – click Allow. The server only answers browser requests from `localhost`, `*.github.io` and origins you pass with `--allow-origin https://my.site`.
 
+## 5b. Activity while the dock was closed
+
+Twitch only *pushes* events (EventSub) while the dock is open. To still show what happened in the meantime, the dock asks Twitch on every connect – and every 5 minutes while connected as a safety net – for:
+
+| What | How | Needs |
+|---|---|---|
+| New follows (with the real time) | Get Channel Followers, everything newer than the last one seen | `moderator:read:followers` |
+| New subs & received gift subs | Get Broadcaster Subscriptions, compared with the last known subscriber list | Affiliate/Partner |
+| Bits | Get Bits Leaderboard (current week) compared per user | `bits:read` |
+| Channel-point redeems still in the queue | Get Custom Reward Redemption (UNFULFILLED) | rewards created through this app |
+
+Caught-up items have a dashed left border and a `↺` next to the time, and a short "While you were away: …" line summarises them. On the very first connect the dock loads the follows of the last 7 days so the feed is not empty; those are not counted in the session stats. (Channels with more than 2,000 subscribers get a count instead of individual subs.) Everything is configurable under **Settings → Twitch → Activity while the dock is closed**, including a **Check now** button.
+
+YouTube (Google sign-in): the last 50 public subscribers and the Super Chats of the last 30 days are loaded on connect, and new subscribers are checked every 2 minutes – also while you are not live.
+
 ## 6. Tips & troubleshooting
 
+* **Black / empty page?** The page now tells you why in plain text. The usual causes: the `js` and `css` folders were not uploaded to GitHub (the repository must list them next to `index.html`), or `index.html` was opened from inside the zip instead of an extracted folder, or GitHub Pages is still building (wait a minute, then reload with Ctrl+F5). Note that `overlay.html` is *meant* to be invisible – it only shows something when an alert fires (add `?preview=1` to the URL to see demo alerts).
+* **Nothing shows up while live?** A yellow/red line under the filter chips tells you why (not connected, login expired, missing permissions, EventSub subscriptions rejected). Click it to jump to the right settings tab. No line = the connection is fine; use **Settings → Test** to make sure the feed itself works.
+* **Connected in your browser, but the OBS dock says "not connected"?** The OBS dock is a separate browser with its own storage – logins do not carry over. Either connect again inside the dock, or in the browser use **Settings → About → Copy setup link for OBS** and paste that link as the dock URL in OBS once (it carries your settings and logins; keep it private). Then keep using the dock in one place: a Twitch login used in two places at once signs itself out.
 * **Nothing shows up?** Click the coloured **Twitch / YouTube** pills in the header – they open the matching settings tab with a status line. **Settings → About → Log** shows what is happening; *Copy log* is handy for bug reports.
 * **Test everything** with **Settings → Test** (test events are marked `TEST` and are not counted in the stats).
 * **Filters:** click a chip to hide/show a type, right-click to show only that type, and use the search box to find a user.
 * **Pause** (⏸) holds new items while you read; they are added when you resume.
 * **Chat too busy?** Untick *Chat messages* under Twitch/YouTube "What to track", or hide it with the *Chat* chip.
 * **Sounds don't play in a normal browser** until you click the page once (browser autoplay rules). In OBS docks they play immediately.
+* **Twitch keeps disconnecting / "Token refresh failed"?** Twitch refresh tokens are single-use. If the dock is open in OBS *and* in a browser tab at the same time they overwrite each other's login. Use one, or sign out of the other.
 * **Signed in with the wrong account?** *Sign out* in the relevant tab. Everything is stored in the browser profile of the OBS dock; *Settings → About → Reset everything* clears it.
 * **Port 8520 busy?** `node server.js --port 9000` (and use that port in the URLs).
 * **Start with Windows:** create a shortcut to `start-dock.bat` in `shell:startup`.

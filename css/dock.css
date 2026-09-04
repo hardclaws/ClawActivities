@@ -186,3 +186,17 @@ details.adv { margin-top: 10px; } details.adv summary { color: var(--fg3); curso
   .pill .lbl { display: none; }
   .filters .search { width: 80px; }
 }
+
+/* health banner: why nothing may be arriving */
+.health { display: flex; flex-direction: column; gap: 2px; padding: 4px 8px; border-bottom: 1px solid var(--line); background: var(--bg); }
+.health.hidden { display: none; }
+.health .hl { display: flex; align-items: center; gap: 7px; font-size: 11.5px; padding: 4px 8px; border-radius: 6px; cursor: pointer; background: var(--bg2); color: var(--fg2); }
+.health .hl:hover { background: var(--bg3); }
+.health .hl .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--fg3); flex: none; }
+.health .hl.warn .dot { background: var(--warn); }
+.health .hl.err .dot { background: var(--danger); }
+.health .hl.err { color: #ffb3b3; }
+.health .hl.info .dot { background: var(--accent); }
+/* catch-up items (found via Helix instead of live EventSub) */
+.ev.catchup { border-left-style: dashed; }
+.ev.catchup .time::before { content: "↺ "; opacity: .7; }

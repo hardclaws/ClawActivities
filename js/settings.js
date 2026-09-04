@@ -12,6 +12,8 @@
       hype: true,
       ads: true,
       streamStatus: true,
+      catchUp: true,         // on connect: fetch follows / subs / bits that happened since the last session
+      poll: true,            // every 5 min: safety-net check via Helix (covers missed EventSub events)
       // dev / advanced (hidden unless ?dev=1)
       wsUrl: '',
       helixUrl: '',
@@ -30,6 +32,7 @@
       pollMin: 0,            // seconds; 0 = follow server-provided interval
       useStream: true,       // try streamList before falling back to list polling
       subscribers: true,     // poll recent subscribers (official OAuth only)
+      history: true,         // on connect: recent subscribers + super chats of the last 30 days (official OAuth only)
       chat: true,
     },
     feed: {

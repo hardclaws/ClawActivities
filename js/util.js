@@ -49,6 +49,14 @@ window.AD = window.AD || {};
     if (s < 86400) return Math.floor(s / 3600) + 'h';
     return Math.floor(s / 86400) + 'd';
   }
+  /** Time label for the feed: today -> 14:05, this week -> Tue 14:05, older -> 3 Sep */
+  function fmtWhen(ts) {
+    const d = new Date(ts), now = new Date();
+    if (d.toDateString() === now.toDateString()) return fmtTime(ts);
+    const days = (now - d) / 86400000;
+    if (days < 6) return d.toLocaleDateString(undefined, { weekday: 'short' }) + ' ' + fmtTime(ts);
+    return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+  }
   function fmtNum(n) { return Number(n || 0).toLocaleString(); }
   function fmtMoney(micros, currency) {
     const v = Number(micros || 0) / 1e6;
@@ -173,6 +181,6 @@ window.AD = window.AD || {};
     return 'rgba(' + parseInt(m[1], 16) + ',' + parseInt(m[2], 16) + ',' + parseInt(m[3], 16) + ',' + (a == null ? 1 : a) + ')';
   }
 
-  Object.assign(AD, { esc, h, append, fmtTime, relTime, fmtNum, fmtMoney, tierName, uid, sleep, clamp, debounce, throttle, store, Emitter, sha256b64, parseHashParams, copyText, toast, argbToCss, rgba });
+  Object.assign(AD, { esc, h, append, fmtTime, fmtWhen, relTime, fmtNum, fmtMoney, tierName, uid, sleep, clamp, debounce, throttle, store, Emitter, sha256b64, parseHashParams, copyText, toast, argbToCss, rgba });
   AD.bus = new Emitter();
 })(window.AD);

@@ -9,7 +9,36 @@
 <link rel="stylesheet" href="css/dock.css">
 </head>
 <body>
-<div id="app"></div>
+<div id="app"><div id="boot" style="font:14px/1.5 system-ui,'Segoe UI',Arial,sans-serif;color:#e6e7ea;background:#17181c;min-height:100vh;padding:24px;box-sizing:border-box"><div id="boot-title" style="font-weight:700;margin-bottom:8px">Activity Dock is loading&hellip;</div><div id="boot-msg" style="color:#ffb703;white-space:pre-wrap;max-width:720px"></div></div></div>
+<script>
+/* Boot guard (plain ES5 on purpose): if the other files fail to load or to run, say so instead of showing a black page. */
+(function () {
+  var msgs = [];
+  function show(text) {
+    if (msgs.length >= 2 || msgs.indexOf(text) !== -1) return; msgs.push(text);
+    var box = document.getElementById('boot-msg'), title = document.getElementById('boot-title');
+    if (!box) return; /* the app already started and removed the placeholder */
+    if (title) title.textContent = 'Activity Dock could not start';
+    box.textContent = msgs.join('\n\n');
+  }
+  window.addEventListener('error', function (e) {
+    var t = e.target;
+    if (t && t !== window && (t.tagName === 'SCRIPT' || t.tagName === 'LINK')) {
+      var src = t.getAttribute('src') || t.getAttribute('href') || '?';
+      show('Could not load "' + src + '" - the file is not next to index.html.\n' +
+        '\u2022 GitHub: open the repository and check that the folders "js" and "css" are there, not only index.html. If they are missing, upload again by dragging the folders (the "choose your files" button cannot pick folders).\n' +
+        '\u2022 On your PC: extract the zip first; opening index.html from inside the zip does not work.');
+    } else if (e.message) {
+      var where = e.filename ? '  (' + String(e.filename).replace(/^.*\//, '') + ':' + e.lineno + ')' : '';
+      show('Script error: ' + e.message + where + '\n' +
+        (/SyntaxError/.test(e.message) ? 'The browser is too old for this dock: it needs OBS 28 or newer, or a current Chrome / Edge / Firefox.' : 'Please report this message (Settings \u2192 About \u2192 Copy log is not available yet, so a screenshot is fine).'));
+    }
+  }, true);
+  setTimeout(function () {
+    if (!(window.AD && window.AD.app)) show('The scripts did not start within 5 seconds. Check that the js/ folder was uploaded next to index.html, then press F12 to see the browser console.');
+  }, 5000);
+})();
+</script>
 <script src="js/util.js"></script>
 <script src="js/events.js"></script>
 <script src="js/settings.js"></script>

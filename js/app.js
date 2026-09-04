@@ -53,12 +53,14 @@
     svgBtn('gear', 'Settings', () => openSettings()));
 
   const $filters = h('div.filters');
+  const $health = h('div.health.hidden');
   const $stats = h('div.stats');
   const $feed = h('div.feed');
   const $newBadge = h('button.newbadge', { onclick: () => { jumpToNew(); } });
   const $feedWrap = h('div.feedwrap', $feed, $newBadge);
   const $drawer = h('div.drawer');
-  $app.append($header, $filters, $stats, $feedWrap, $drawer);
+  $app.textContent = ''; /* remove the boot placeholder */
+  $app.append($header, $filters, $health, $stats, $feedWrap, $drawer);
 
   /* =====================================================================
      Header / status
@@ -75,8 +77,34 @@
     $pauseBtn.title = paused ? 'Resume feed (' + pausedQueue.length + ' queued)' : 'Pause feed';
     $statsBtn.classList.toggle('active', s.feed.showStats !== false);
   }
-  AD.bus.on('twitch:status', () => { refreshHeader(); if ($drawer.classList.contains('open') && activeTab === 'twitch') renderTab(); });
-  AD.bus.on('youtube:status', () => { refreshHeader(); if ($drawer.classList.contains('open') && activeTab === 'youtube') renderTab(); });
+  AD.bus.on('twitch:status', () => { refreshHeader(); refreshHealth(); if ($drawer.classList.contains('open') && activeTab === 'twitch') renderTab(); });
+  AD.bus.on('youtube:status', () => { refreshHeader(); refreshHealth(); if ($drawer.classList.contains('open') && activeTab === 'youtube') renderTab(); });
+  AD.bus.on('twitch:auth', refreshHealth); AD.bus.on('youtube:auth', refreshHealth); AD.bus.on('settings', refreshHealth);
+  /** One-line explanation of why nothing may be arriving (shown between the filters and the feed). */
+  function refreshHealth() {
+    const s = S.get(); const t = AD.twitch.state, y = AD.youtube.state; const lines = [];
+    const SCOPE_WHAT = { 'moderator:read:followers': 'follows', 'channel:read:subscriptions': 'subs', 'bits:read': 'bits', 'channel:read:redemptions': 'redeems', 'user:read:chat': 'chat', 'channel:read:hype_train': 'hype train', 'channel:read:ads': 'ad breaks', 'moderator:read:shoutouts': 'shoutouts', 'channel:read:charity': 'charity' };
+    if (s.twitch.enabled) {
+      const missing = AD.twitch.hasAuth() ? AD.twitch.missingScopes() : [];
+      if (!AD.twitch.hasAuth()) lines.push(t.status === 'error' ? ['err', 'Twitch login expired (' + (t.detail || 'error') + ') - click to sign in again', 'twitch'] : ['warn', 'Twitch is not connected in this ' + (navigator.userAgent.includes('OBS') ? 'OBS dock' : 'browser') + ' - click to connect', 'twitch']);
+      else if (missing.length) lines.push(['warn', 'Twitch login is missing permissions for ' + missing.map((m) => SCOPE_WHAT[m] || m).join(', ') + ' - click, then "Sign out and reconnect"', 'twitch']);
+      else if (t.status === 'error') lines.push(['err', 'Twitch: ' + (t.detail || 'error'), 'twitch']);
+      else if (t.status === 'connecting' || t.status === 'auth') lines.push(['warn', 'Twitch: ' + (t.detail || 'connecting…'), 'twitch']);
+      else if (t.status === 'disconnected') lines.push(['warn', 'Twitch is disconnected - click to connect', 'twitch']);
+      else if (t.status === 'connected') {
+        const bad = Object.entries(t.subs).filter(([, v]) => v !== 'enabled' && !/Affiliate/.test(v));
+        const core = bad.filter(([k]) => /^channel\.(follow|subscribe|subscription\.gift|cheer|raid|channel_points_custom)/.test(k));
+        if (core.length) lines.push(['warn', 'Twitch connected, but not receiving ' + core.map(([k]) => k.replace(/^channel\./, '').replace(/_/g, ' ').replace('channel points custom reward redemption.add', 'redeems').replace('subscription.gift', 'gift subs')).join(', ') + ' - open the Twitch tab for the reason', 'twitch']);
+      }
+    }
+    if (s.youtube.enabled) {
+      if (y.status === 'error') lines.push(['err', 'YouTube: ' + (y.detail || 'error'), 'youtube']);
+      else if (y.status === 'idle') lines.push(['info', 'YouTube: ' + (y.detail || 'no live stream right now'), 'youtube']);
+      else if (y.status === 'connecting') lines.push(['warn', 'YouTube: ' + (y.detail || 'connecting…'), 'youtube']);
+    }
+    $health.replaceChildren(...lines.map(([lvl, text, tab]) => h('div.hl.' + lvl, { onclick: () => openSettings(tab) }, h('span.dot'), text)));
+    $health.classList.toggle('hidden', !lines.length);
+  }
   AD.bus.on('twitch:auth', () => renderTabIf('twitch')); AD.bus.on('youtube:auth', () => renderTabIf('youtube'));
   function renderTabIf(tab) { if ($drawer.classList.contains('open') && activeTab === tab) renderTab(); }
 
@@ -113,7 +141,7 @@
      Stats
      ===================================================================== */
   function bump(ev) {
-    if (ev.test) return;
+    if (ev.test || ev.meta?.backfill) return; // test events and the initial 7-day backfill do not count as session activity
     switch (E.groupOf(ev.type)) {
       case 'follows': stats.follows++; break;
       case 'subs': stats.subs++; break;
@@ -197,7 +225,8 @@
       if (ev.meta?.shared_from) body.appendChild(h('div.ctx', 'via shared chat: ' + ev.meta.shared_from));
     }
     el.appendChild(body);
-    el.appendChild(h('span.time', { title: new Date(ev.ts).toLocaleString() }, f.timestamps ? AD.fmtTime(ev.ts) : ''));
+    el.appendChild(h('span.time', { title: new Date(ev.ts).toLocaleString() + (ev.meta?.source === 'catchup' ? ' - found by catch-up (happened while the dock was closed or missed live)' : '') }, f.timestamps ? AD.fmtWhen(ev.ts) : ''));
+    if (ev.meta?.source === 'catchup') el.classList.add('catchup');
     el.addEventListener('click', (e) => {
       if (e.target.closest('a,img') || window.getSelection()?.toString()) return;
       if (!body.querySelector('.more')) body.appendChild(h('pre.more', JSON.stringify({ ...ev, fragments: ev.fragments ? ev.fragments.length + ' fragment(s)' : undefined }, null, 1)));
@@ -208,6 +237,18 @@
   function insertNode(ev, el) {
     const f = S.get().feed; const atTop = f.newestTop;
     const wasAtEdge = atTop ? $feed.scrollTop <= 4 : ($feed.scrollHeight - $feed.scrollTop - $feed.clientHeight) <= 40;
+    // history / catch-up items carry their real timestamp -> slot them in chronologically instead of on top
+    const newest = history.length > 1 ? history[history.length - 2] : null; // history already contains ev (pushed by onEvent)
+    if (ev.meta?.history && newest && ev.ts < newest.ts - 1000) {
+      // find the first item that is older than ev
+      let idx = history.length - 1; while (idx > 0 && history[idx - 1].ts > ev.ts) idx--;
+      history.splice(history.length - 1, 1); history.splice(idx, 0, ev);
+      const olderNeighbour = idx > 0 ? nodes.get(history[idx - 1].id) : null, newerNeighbour = idx + 1 < history.length ? nodes.get(history[idx + 1].id) : null;
+      if (atTop) { if (newerNeighbour) newerNeighbour.after(el); else if (olderNeighbour) olderNeighbour.before(el); else $feed.prepend(el); }
+      else { if (olderNeighbour) olderNeighbour.after(el); else if (newerNeighbour) newerNeighbour.before(el); else $feed.appendChild(el); }
+      nodes.set(ev.id, el); if (!passes(ev)) el.classList.add('hidden');
+      return;
+    }
     if (atTop) $feed.prepend(el); else $feed.appendChild(el);
     nodes.set(ev.id, el);
     if (!passes(ev)) el.classList.add('hidden');
@@ -234,6 +275,7 @@
   function rerenderAll() {
     $feed.replaceChildren(); nodes.clear();
     const f = S.get().feed;
+    history.sort((a, b) => a.ts - b.ts);
     for (const ev of history) { const el = render(ev); if (f.newestTop) $feed.prepend(el); else $feed.appendChild(el); nodes.set(ev.id, el); if (!passes(ev)) el.classList.add('hidden'); }
     document.documentElement.style.setProperty('--font-scale', String(f.fontScale || 1));
     document.body.classList.toggle('no-anim', !!f.noAnim);
@@ -370,9 +412,16 @@
         st.status === 'connected' || st.status === 'connecting' ? h('button.btn', { onclick: () => { AD.twitch.disconnect(); renderTab(); } }, 'Disconnect') : h('button.btn.primary', { onclick: () => { AD.twitch.connect().catch((e) => AD.toast(e.message)); } }, 'Connect'),
         h('button.btn', { onclick: () => { AD.twitch.disconnect(); AD.twitch.connect().catch((e) => AD.toast(e.message)); } }, 'Reconnect'),
         armed('Sign out', async () => { await AD.twitch.logout(); renderTab(); }, '.danger')));
+      if (!navigator.userAgent.includes('OBS')) out.push(h('p.hint', 'Connected here in a normal browser? The OBS dock has its own storage - use ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); openSettings('debug'); } }, 'About → Copy setup link for OBS'), ' to move this login into OBS.'));
       const subs = Object.entries(st.subs);
       if (subs.length) out.push(h('h3', 'EventSub subscriptions'), h('div.sublist', subs.map(([t, v]) => h('div.' + (v === 'enabled' ? 'ok' : 'bad'), { title: t + ': ' + v }, t.replace(/^channel\./, '').replace(/_/g, ' ') + (v === 'enabled' ? '' : ' - ' + v.replace(/^failed: /, ''))))),
         subs.some(([, v]) => /Affiliate/.test(v)) ? h('p.hint', 'Subs, bits, channel points and hype train events require Twitch Affiliate/Partner status - they will fail for non-affiliated channels, which is expected.') : null);
+      out.push(h('h3', 'Activity while the dock is closed'),
+        h('p.hint', 'Twitch only pushes events while the dock is open. On every connect the dock therefore asks Twitch what happened in the meantime (new follows, subs & gift subs, bits, pending channel-point redeems) and adds it to the feed with the real time. The same check repeats every 5 minutes as a safety net.'),
+        check('Catch up on connect', 'twitch.catchUp'),
+        check('Re-check every 5 minutes while connected', 'twitch.poll'),
+        h('div.btnrow', h('button.btn.sm', { onclick: async (e) => { const b = e.currentTarget; b.disabled = true; b.textContent = 'Checking…'; try { const r = await AD.twitch.catchUp('manual'); AD.toast(r ? ('Found ' + r.follows + ' follows, ' + r.subs + ' subs, ' + AD.fmtNum(r.bits) + ' bits, ' + r.redeems + ' pending redeems') : 'Not connected'); } catch (err) { AD.toast(err.message); } b.disabled = false; b.textContent = 'Check now'; } }, 'Check now'),
+          h('span.hint', st.lastCatchUp ? 'Last check ' + AD.fmtTime(st.lastCatchUp, true) + (st.subCount != null ? ' - ' + st.subCount + ' current subscribers' : '') : '')));
       out.push(h('h3', 'What to track'),
         check('Chat messages', 'twitch.chat', '(uncheck to save CPU on very busy chats)', restartTwitch),
         check('Chat notices', 'twitch.notices', '(announcements, watch streaks, shared chat events)', restartTwitch),
@@ -422,7 +471,8 @@
 
     out.push(h('h3', 'What to track'),
       check('Chat messages', 'youtube.chat', null, restartYouTube),
-      check('New channel subscribers', 'youtube.subscribers', '(official API with Google sign-in only; only public subscriptions are visible; checked every 2 min)', restartYouTube),
+      check('New channel subscribers', 'youtube.subscribers', '(official API with Google sign-in only; only public subscriptions are visible; checked every 2 min - also while you are offline)', restartYouTube),
+      check('Load recent history on connect', 'youtube.history', '(Google sign-in only: last 50 public subscribers and the Super Chats of the last 30 days)', restartYouTube),
       check('Use streaming connection when available', 'youtube.useStream', '(fewer requests; falls back to polling automatically)', restartYouTube),
       field('Minimum poll interval (seconds, polling mode)', 'youtube.pollMin', { type: 'number', min: 0, max: 120, step: 1, hint: '0 = follow YouTube\'s suggested interval. Increase (e.g. 15-30) to stretch the daily quota.' }));
     return out;
@@ -550,6 +600,9 @@
       h('h3', 'About'),
       h('p', h('b', 'Activity Dock'), ' v' + VERSION + ' - a free, open-source Twitch + YouTube activity feed for OBS. Runs entirely in your browser; nothing is sent to third-party servers other than Twitch, YouTube/Google and (optionally) your own local helper.'),
       h('div.kv', h('span', 'Running from'), h('b', IS_HTTP ? location.origin : 'local file'), h('span', 'Local server'), h('b', serverBase || 'not detected'), h('span', 'Storage used'), h('b', (used / 1024).toFixed(1) + ' KB'), h('span', 'Browser'), h('b', navigator.userAgent.includes('OBS') ? 'OBS (' + (navigator.userAgent.match(/OBS\/[\d.]+/) || [''])[0] + ')' : 'regular browser')),
+      h('h3', 'Move this setup into OBS (or another browser)'),
+      h('p.hint', 'Logins live in the browser they were made in. If you connected Twitch/YouTube here but the OBS dock shows "not connected", copy this link and use it as the dock URL in OBS once - it carries your settings and logins (keep it private). After OBS has loaded it, keep using the dock in one place only: Twitch logins used in two places at the same time sign each other out.'),
+      h('div.btnrow', h('button.btn.primary', { onclick: async () => { (await AD.copyText(setupLink())) ? AD.toast('Setup link copied - paste it as the dock URL in OBS') : AD.toast('Copy failed'); } }, 'Copy setup link for OBS')),
       h('h3', 'Settings backup'),
       h('div.btnrow',
         h('button.btn', { onclick: () => download('activity-dock-settings.json', JSON.stringify(S.export(false), null, 2)) }, 'Export (without secrets)'),
@@ -591,14 +644,35 @@
     const helper = (S.get().youtube.helperUrl || 'http://127.0.0.1:8520').replace(/\/$/, '');
     return probeServer(helper);
   }
+  /** #setup=<base64 json> in the URL: import settings + logins (used to move a finished setup from the browser into the OBS dock). */
+  function importSetupFromHash() {
+    if (!q.setup) return false;
+    // OBS keeps the dock URL, so the same link is opened on every start: import each payload only once
+    let sig = 0; for (let i = 0; i < q.setup.length; i++) sig = (sig * 31 + q.setup.charCodeAt(i)) | 0; sig = q.setup.length + ':' + sig;
+    try { window.history.replaceState(null, '', location.pathname + location.search); } catch (_) { } // keep tokens out of the address bar
+    if (AD.store.get('ad.setupImported', '') === sig) return false;
+    try {
+      const data = JSON.parse(decodeURIComponent(escape(atob(q.setup.replace(/-/g, '+').replace(/_/g, '/')))));
+      if (data.settings) S.replace(data.settings);
+      if (data.twitchAuth) AD.store.set('ad.twitch.auth.v1', data.twitchAuth); if (data.youtubeAuth) AD.store.set('ad.youtube.auth.v1', data.youtubeAuth);
+      AD.store.del('ad.twitch.catchup.v1'); AD.store.set('ad.setupImported', sig);
+      location.reload(); return true;
+    } catch (e) { AD.toast('Setup link could not be read: ' + e.message, 6000); return false; }
+  }
+  function setupLink() {
+    const data = { settings: S.export(true), twitchAuth: AD.store.get('ad.twitch.auth.v1', null), youtubeAuth: AD.store.get('ad.youtube.auth.v1', null) };
+    const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(data)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    return location.href.replace(/[#].*$/, '') + '#setup=' + b64;
+  }
   async function boot() {
+    if (importSetupFromHash()) return;
     AD.log('Activity Dock v' + VERSION + ' starting');
     relay = new AD.Relay('dock');
     relay.on('status', () => { if ($drawer.classList.contains('open') && (activeTab === 'obs' || activeTab === 'alerts')) renderTab(); });
     relay.on('message', (m) => { if (m.kind === 'overlay-hello') AD.log('overlay connected via ' + (m.via || 'relay')); });
     // restore history
     for (const ev of AD.store.get(HIST_KEY, [])) { if (ev && ev.id) { ev.meta = ev.meta || {}; ev.meta.history = true; history.push(ev); } }
-    renderFilters(); rerenderAll(); refreshStats(); refreshHeader(); updateEmpty();
+    renderFilters(); rerenderAll(); refreshStats(); refreshHeader(); updateEmpty(); refreshHealth();
     serverBase = await detectServer();
     if (serverBase) { relay.useServer(serverBase); if (serverBase === location.origin) S.set('youtube.helperUrl', serverBase, true); AD.log('local server detected at ' + serverBase); }
     else setInterval(async () => { if (serverBase) return; const b = await detectServer(); if (b) { serverBase = b; relay.useServer(b); AD.log('local server detected at ' + b); if ($drawer.classList.contains('open')) renderTab(); } }, 30_000);
@@ -608,5 +682,5 @@
     if (q.test === '1') setTimeout(() => { for (const t of ['tw_follow', 'tw_sub', 'tw_cheer', 'yt_superchat', 'tw_chat', 'tw_redeem']) AD.bus.emit('event', E.sample(t)); }, 300);
   }
   boot();
-  AD.app = { openSettings, version: VERSION, history, stats: () => stats };
+  AD.app = { openSettings, version: VERSION, history, stats: () => stats, has: (id) => nodes.has(id) || queuedIds.has(id), refreshHealth };
 })(window.AD);
